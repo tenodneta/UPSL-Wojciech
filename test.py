@@ -2,7 +2,6 @@ import streamlit as st
 import socket
 import threading
 import time
-from collections import defaultdict
 
 # Konfiguracja dynamiczna
 BUFFER_SIZE = st.slider("Buffer Size", 512, 4096, 1024)
@@ -12,52 +11,8 @@ BLACKLIST_TIME = st.slider("Blacklist Time (s)", 60, 3600, 600)
 MAX_MESSAGE_LENGTH = st.slider("Max Message Length", 256, 1024, 512)
 PORT = 8080
 
-# Zmienna przechowująca dane o połączeniach
-client_data = defaultdict(list)
-
-# Funkcja do zarządzania połączeniami (weryfikacja flood ataku)
-def handle_client(client, addr):
-    ip = addr[0]
-    current_time = time.time()
-    
-    # Sprawdzamy, czy IP jest zablokowane
-    if is_blacklisted(ip, current_time):
-        st.write(f"Adres IP {ip} jest zablokowany. Ignorowanie połączenia.")
-        client.close()
-        return
-    
-    # Dodajemy czas połączenia do listy
-    client_data[ip].append(current_time)
-    
-    # Usuwamy stare dane, które wykraczają poza ustalony limit czasowy
-    client_data[ip] = [t for t in client_data[ip] if current_time - t <= TIME_WINDOW]
-    
-    # Jeśli przekroczono limit połączeń w danym czasie, blokujemy IP
-    if len(client_data[ip]) > FLOOD_LIMIT:
-        blacklist(ip, current_time)
-        st.write(f"Adres IP {ip} przekroczył limit połączeń i został zablokowany.")
-        client.close()
-        return
-    
-    # Odbieramy dane od klienta
-    data = client.recv(BUFFER_SIZE)
-    if len(data) > MAX_MESSAGE_LENGTH:
-        st.write(f"Odebrano zbyt długą wiadomość od {ip}. Blokowanie!")
-    else:
-        st.write(f"Odebrano od {ip}: {data.decode()}")
-    
-    client.sendall(b"OK")
-    client.close()
-
-# Funkcja sprawdzająca, czy IP jest zablokowane
-def is_blacklisted(ip, current_time):
-    if ip in blacklist:
-        return current_time - blacklist[ip] < BLACKLIST_TIME
-    return False
-
-# Funkcja dodająca IP do czarnej listy
-def blacklist(ip, current_time):
-    blacklist[ip] = current_time
+# Flaga do zatrzymania ataku
+stop_attack = False
 
 # Funkcja serwera
 def start_server():
@@ -69,6 +24,16 @@ def start_server():
         client, addr = server.accept()
         threading.Thread(target=handle_client, args=(client, addr)).start()
 
+def handle_client(client, addr):
+    ip = addr[0]
+    data = client.recv(BUFFER_SIZE)
+    if len(data) > MAX_MESSAGE_LENGTH:
+        st.write(f"Odebrano zbyt długą wiadomość od {ip}. Blokowanie!")
+    else:
+        st.write(f"Odebrano od {ip}: {data.decode()}")
+    client.sendall(b"OK")
+    client.close()
+
 # Klient TCP
 def tcp_client():
     client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -78,7 +43,7 @@ def tcp_client():
     st.write(f"Serwer odpowiedział: {response.decode()}")
     client.close()
 
-# Flood klient (na potrzeby testów)
+# Flood klient
 def flood_client():
     def attack():
         client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -91,6 +56,9 @@ def flood_client():
     
     threads = []
     for _ in range(FLOOD_LIMIT):
+        if stop_attack:
+            st.write("Atak zatrzymany!")
+            break  # Zatrzymanie ataku, jeśli flaga jest ustawiona
         t = threading.Thread(target=attack)
         t.start()
         threads.append(t)
@@ -99,6 +67,11 @@ def flood_client():
     for t in threads:
         t.join()
 
+# Funkcja do zatrzymania ataku
+def stop_flood_attack():
+    global stop_attack
+    stop_attack = True  # Ustawienie flagi, aby zatrzymać atak
+
 # Interfejs Streamlit
 st.title("TCP Server & Client GUI")
 if st.button("Start Server"):
@@ -106,5 +79,7 @@ if st.button("Start Server"):
 if st.button("Send TCP Message"):
     tcp_client()
 if st.button("Start Flood Attack"):
-    flood_client()
-
+    stop_attack = False  # Resetowanie flagi przed uruchomieniem ataku
+    threading.Thread(target=flood_client, daemon=True).start()
+if st.button("Stop Flood Attack"):
+    stop_flood_attack()  # Zatrzymanie ataku
